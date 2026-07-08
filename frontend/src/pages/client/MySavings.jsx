@@ -1,0 +1,1056 @@
+import { useEffect, useMemo, useState } from 'react';
+import PageHeader from '../../components/PageHeader.jsx';
+import { useLanguage } from '../../context/LanguageContext.jsx';
+import { PiggyBank, TrendingUp, Plus, Download, X, Wallet, Landmark, FileText, Upload } from 'lucide-react';
+import '../admin/AdminPages.css';
+import './ClientPages.css';
+import api from '../../utils/api';
+import { useToast } from '../../context/ToastContext';
+import ReceiptVerificationPanel from '../../components/ReceiptVerificationPanel.jsx';
+import CancelRequestModal from '../../components/CancelRequestModal.jsx';
+import { formatDateOnly, formatDateTime } from '../../utils/dateTime';
+
+const initialSavingForm = {
+  type: 'Passbook Saving',
+  amount: '',
+  duration_months: '',
+  description: ''
+};
+
+const getApprovalTypeLabel = (type) => {
+  if (type === 'transaction_deposit') return 'Deposit';
+  if (type === 'transaction_withdraw') return 'Withdrawal';
+  if (type === 'savings_account_approval') return 'New savings account';
+  return type || 'Request';
+};
+
+const MySavings = () => {
+  const { t, tStatus } = useLanguage();
+  const { success, warning, error } = useToast();
+  const [savings, setSavings] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [savingOptions, setSavingOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showCreateSavingsModal, setShowCreateSavingsModal] = useState(false);
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [amount, setAmount] = useState('');
+  const [description, setDescription] = useState('');
+  const [transactionSuccess, setTransactionSuccess] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [receipt, setReceipt] = useState(null);
+  const [newSaving, setNewSaving] = useState(initialSavingForm);
+  const [savingsDocFile, setSavingsDocFile] = useState(null);
+  const [uploadingSavingsDoc, setUploadingSavingsDoc] = useState(false);
+  const [receiptProofFile, setReceiptProofFile] = useState(null);
+  const [depositReceiptFile, setDepositReceiptFile] = useState(null);
+  const [uploadingReceiptProof, setUploadingReceiptProof] = useState(false);
+  const [showDepositModal, setShowDepositModal] = useState(false);
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositDescription, setDepositDescription] = useState('');
+  const [depositSubmitting, setDepositSubmitting] = useState(false);
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [withdrawStep, setWithdrawStep] = useState('form');
+  const [depositStep, setDepositStep] = useState('form');
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+
+  useEffect(() => {
+    fetchSavings();
+    fetchTransactions();
+    fetchSavingOptions();
+    fetchPendingRequests();
+  }, []);
+
+  const fetchPendingRequests = async () => {
+    setPendingLoading(true);
+    try {
+      const data = await api.getMyPendingApprovalRequests();
+      setPendingRequests(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Pending requests error:', err);
+      setPendingRequests([]);
+    } finally {
+      setPendingLoading(false);
+    }
+  };
+
+  const fetchSavings = async () => {
+    try {
+      const data = await api.getMySavings();
+      setSavings(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Error fetching savings:', error);
+      setSavings([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUploadSavingsSupportDocument = async (saving) => {
+    if (!savingsDocFile) {
+      warning('Please choose a file first.');
+      return;
+    }
+    try {
+      setUploadingSavingsDoc(true);
+      const formData = new FormData();
+      formData.append('file', savingsDocFile);
+      formData.append('type', `Savings Request Support - ${saving.id}`);
+      formData.append('related_entity_type', 'savings_account');
+      formData.append('related_entity_id', saving.id);
+      await api.uploadDocument(formData);
+      success('Supporting document uploaded successfully.');
+      setSavingsDocFile(null);
+    } catch (err) {
+      setFormError(err.message || 'Failed to upload supporting document.');
+    } finally {
+      setUploadingSavingsDoc(false);
+    }
+  };
+
+  const fetchTransactions = async () => {
+    try {
+      const data = await api.getMySavingsTransactions();
+      const normalized = Array.isArray(data) ? data : [];
+      normalized.sort((a, b) => {
+        const aTime = new Date(a.created_at || 0).getTime();
+        const bTime = new Date(b.created_at || 0).getTime();
+        if (bTime !== aTime) return bTime - aTime;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
+      setTransactions(normalized);
+    } catch (error) {
+      console.error('Error fetching transactions:', error);
+      setTransactions([]);
+    }
+  };
+
+  const upsertRecentTransaction = (transaction) => {
+    if (!transaction?.id) return;
+    setTransactions((current) => {
+      const next = [transaction, ...(Array.isArray(current) ? current : [])]
+        .filter((item, idx, arr) => item?.id && arr.findIndex((x) => x?.id === item.id) === idx);
+      next.sort((a, b) => {
+        const aTime = new Date(a.created_at || 0).getTime();
+        const bTime = new Date(b.created_at || 0).getTime();
+        if (bTime !== aTime) return bTime - aTime;
+        return String(b.id || '').localeCompare(String(a.id || ''));
+      });
+      return next.slice(0, 25);
+    });
+  };
+
+  const fetchSavingOptions = async () => {
+    try {
+      const data = await api.getSavingsOptions();
+      setSavingOptions(data);
+    } catch (error) {
+      console.error('Error fetching savings options:', error);
+      setSavingOptions([]);
+    }
+  };
+
+  const closedSavingsStatuses = useMemo(() => new Set(['cancelled', 'rejected']), []);
+
+  const visibleSavings = useMemo(
+    () => savings.filter((account) => !closedSavingsStatuses.has(String(account.status || '').toLowerCase())),
+    [savings, closedSavingsStatuses]
+  );
+
+  const closedSavings = useMemo(
+    () => savings.filter((account) => closedSavingsStatuses.has(String(account.status || '').toLowerCase())),
+    [savings, closedSavingsStatuses]
+  );
+
+  const [dismissSubmitting, setDismissSubmitting] = useState(null);
+
+  const handleDismissSavings = async (accountId) => {
+    if (!window.confirm(t('confirm_remove_closed_plan'))) return;
+    setDismissSubmitting(accountId);
+    try {
+      await api.deleteMySavingsAccount(accountId);
+      setSavings((prev) => prev.filter((item) => item.id !== accountId));
+      success(t('closed_plan_removed'));
+    } catch (err) {
+      error(err.message || 'Failed to remove savings plan');
+    } finally {
+      setDismissSubmitting(null);
+    }
+  };
+
+  const existingSavingTypes = useMemo(() => {
+    const blocking = new Set(['active', 'pending', 'pending approval', 'pending branch manager review']);
+    return new Set(
+      visibleSavings
+        .filter((account) => blocking.has(String(account.status || '').toLowerCase()))
+        .map((account) => String(account.type || '').trim().toLowerCase())
+    );
+  }, [visibleSavings]);
+
+  const availableSavingOptions = useMemo(
+    () => savingOptions.filter((option) => !existingSavingTypes.has(String(option.type || '').trim().toLowerCase())),
+    [savingOptions, existingSavingTypes]
+  );
+
+  const selectedSavingOption = availableSavingOptions.find((option) => option.type === newSaving.type)
+    || savingOptions.find((option) => option.type === newSaving.type);
+
+  const openWithdrawModal = (account) => {
+    setSelectedAccount(account);
+    setAmount('');
+    setDescription('');
+    setFormError('');
+    setReceipt(null);
+    setTransactionSuccess(false);
+    setWithdrawStep('form');
+    setShowWithdrawModal(true);
+  };
+
+  const resetSavingForm = () => {
+    setNewSaving(initialSavingForm);
+    setFormError('');
+    setReceipt(null);
+    setTransactionSuccess(false);
+    setReceiptProofFile(null);
+  };
+
+  const openDepositModal = (account) => {
+    setSelectedAccount(account);
+    setDepositAmount('');
+    setDepositDescription('');
+    setDepositReceiptFile(null);
+    setFormError('');
+    setDepositStep('form');
+    setShowDepositModal(true);
+  };
+
+  const proceedWithdrawConfirm = (e) => {
+    e.preventDefault();
+    setFormError('');
+    const numericAmount = parseFloat(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      setFormError('Please enter a valid withdrawal amount.');
+      return;
+    }
+    if (numericAmount > Number(selectedAccount?.amount || 0)) {
+      setFormError('Amount exceeds available balance.');
+      return;
+    }
+    setWithdrawStep('confirm');
+  };
+
+  const handleWithdrawSubmit = async () => {
+    setFormError('');
+    setActionSubmitting(true);
+    try {
+      const result = await api.withdraw(selectedAccount.id, parseFloat(amount), description || 'Withdrawal');
+      if (result?.status === 'Pending Approval' || result?.approval_request_id) {
+        success(result.message || 'Withdrawal submitted for manager approval.');
+        setShowWithdrawModal(false);
+        setWithdrawStep('form');
+        await fetchPendingRequests();
+      } else {
+        setTransactionSuccess(true);
+        if (result?.transaction) upsertRecentTransaction(result.transaction);
+        await Promise.all([fetchSavings(), fetchTransactions()]);
+        success('Withdrawal confirmed successfully');
+      }
+    } catch (err) {
+      console.error('Withdrawal error:', err);
+      setFormError(err.message);
+      if (err.message?.includes('pending request')) {
+        warning(err.message);
+      }
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const proceedDepositConfirm = (e) => {
+    e.preventDefault();
+    setFormError('');
+    const numericAmount = parseFloat(depositAmount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      setFormError('Please enter a valid deposit amount.');
+      return;
+    }
+    if (!depositReceiptFile) {
+      setFormError(t('savings_deposit_receipt_required'));
+      return;
+    }
+    setDepositStep('confirm');
+  };
+
+  const openCancelModal = (request) => {
+    setCancelTarget(request);
+    setCancelReason('');
+    setCancelModalOpen(true);
+  };
+
+  const closeCancelModal = () => {
+    if (cancelSubmitting) return;
+    setCancelModalOpen(false);
+    setCancelTarget(null);
+    setCancelReason('');
+  };
+
+  const confirmCancelPending = async () => {
+    if (!cancelTarget?.id) return;
+    setCancelSubmitting(true);
+    try {
+      await api.cancelApprovalRequest(cancelTarget.id, cancelReason.trim() || 'Cancelled by client');
+      setPendingRequests((prev) => prev.filter((item) => item.id !== cancelTarget.id));
+      if (['account_creation', 'savings_account_approval'].includes(cancelTarget.type)) {
+        setSavings((prev) => prev.filter((account) => account.id !== cancelTarget.entity_id));
+      }
+      success(t('request_cancelled'));
+      closeCancelModal();
+      await Promise.all([fetchPendingRequests(), fetchSavings()]);
+    } catch (err) {
+      error(err.message || 'Failed to cancel request');
+    } finally {
+      setCancelSubmitting(false);
+    }
+  };
+
+  const handleCreateSavingsSubmit = async (e) => {
+    e.preventDefault();
+    setFormError('');
+
+    if (!selectedSavingOption) {
+      setFormError('Please select a valid saving type.');
+      return;
+    }
+
+    if (selectedSavingOption.requires_duration && !newSaving.duration_months) {
+      setFormError('Duration is required for the selected saving type.');
+      return;
+    }
+
+    try {
+      if (!receiptProofFile) {
+        setFormError(t('savings_opening_receipt_required'));
+        return;
+      }
+      const result = await api.applySavings({
+        type: newSaving.type,
+        amount: parseFloat(newSaving.amount),
+        duration_months: newSaving.duration_months ? parseInt(newSaving.duration_months, 10) : null,
+        description: newSaving.description
+      });
+
+      setReceipt(result.receipt || null);
+      // Upload receipt proof and link it to the approval request + savings entity
+      setUploadingReceiptProof(true);
+      const proof = new FormData();
+      proof.append('file', receiptProofFile);
+      proof.append('type', 'Receipt - Savings Opening');
+      if (result?.approval_request_id) {
+        proof.append('approval_request_id', result.approval_request_id);
+      }
+      if (result?.savings?.id) {
+        proof.append('related_entity_type', 'savings_account');
+        proof.append('related_entity_id', result.savings.id);
+      }
+      await api.uploadDocument(proof);
+      setTransactionSuccess(true);
+      await Promise.all([fetchSavings(), fetchTransactions()]);
+      success(result.message || 'Saving transaction recorded successfully.');
+    } catch (error) {
+      console.error('Saving application error:', error);
+      setFormError(error.message);
+    } finally {
+      setUploadingReceiptProof(false);
+    }
+  };
+
+  const handleSubmitDepositRequest = async () => {
+    setFormError('');
+
+    if (!selectedAccount?.id) {
+      setFormError('No savings account selected.');
+      return;
+    }
+    const numericAmount = parseFloat(depositAmount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      setFormError('Please enter a valid deposit amount.');
+      return;
+    }
+    if (!depositReceiptFile) {
+      setFormError('Receipt proof is required for a deposit request. Please attach the receipt (PDF/JPG).');
+      return;
+    }
+
+    try {
+      setDepositSubmitting(true);
+      setActionSubmitting(true);
+      // 1) Upload receipt first
+      const proof = new FormData();
+      proof.append('file', depositReceiptFile);
+      proof.append('type', `Receipt - Savings Deposit - ${selectedAccount.id}`);
+      proof.append('related_entity_type', 'savings_account');
+      proof.append('related_entity_id', selectedAccount.id);
+      const uploaded = await api.uploadDocument(proof);
+
+      // 2) Submit approval request referencing receipt id
+      const resp = await api.submitClientDepositRequest({
+        account_id: selectedAccount.id,
+        amount: numericAmount,
+        description: depositDescription || 'Client deposit (receipt submitted)',
+        receipt_document_id: uploaded?.id
+      });
+
+      success(resp?.message || 'Deposit request submitted for approval.');
+      setShowDepositModal(false);
+      setDepositStep('form');
+      await fetchPendingRequests();
+    } catch (err) {
+      console.error('Deposit request error:', err);
+      setFormError(err.message || 'Failed to submit deposit request.');
+      warning(err.message || 'Failed to submit deposit request.');
+    } finally {
+      setDepositSubmitting(false);
+      setActionSubmitting(false);
+    }
+  };
+
+  const parseFilenameFromContentDisposition = (contentDisposition) => {
+    if (!contentDisposition) return null;
+    const match = /filename="([^"]+)"/i.exec(contentDisposition);
+    return match?.[1] || null;
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `statement_${new Date().toISOString().slice(0, 10)}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadStatement = async (account) => {
+    setFormError('');
+    try {
+      const { blob, contentDisposition } = await api.downloadSavingsStatementPdf(account.id);
+      const filename = parseFilenameFromContentDisposition(contentDisposition)
+        || `savings_statement_${account.id}_${new Date().toISOString().slice(0, 10)}.pdf`;
+      downloadBlob(blob, filename);
+      success('Statement downloaded successfully');
+    } catch (err) {
+      console.error('Statement download error:', err);
+      setFormError(err?.message || 'Failed to download statement');
+      warning(err?.message || 'Failed to download statement');
+    }
+  };
+
+  const renderFeedback = () => (
+    formError ? (
+      <div className="info-card" style={{ marginBottom: '1rem', borderColor: '#fca5a5', background: '#fef2f2' }}>
+        {formError}
+      </div>
+    ) : null
+  );
+
+  const renderReceipt = () => (
+    receipt ? (
+      <div className="info-card" style={{ marginTop: '1rem', textAlign: 'left' }}>
+        <p><strong>Receipt:</strong> {receipt.receipt_id}</p>
+        {'saving_type' in receipt && <p><strong>Saving Type:</strong> {receipt.saving_type}</p>}
+        {'interest_rate' in receipt && <p><strong>Interest Rate:</strong> {receipt.interest_rate}%</p>}
+        <p><strong>Amount:</strong> {Number(receipt.amount || 0).toLocaleString()} ETB</p>
+        <p><strong>Confirmed At:</strong> {formatDateTime(receipt.confirmed_at)}</p>
+      </div>
+    ) : null
+  );
+
+  const savingsOverview = useMemo(() => {
+    const totalBalance = savings.reduce((sum, saving) => sum + (Number(saving.amount) || 0), 0);
+    const projectedInterest = savings.reduce(
+      (sum, saving) => sum + ((Number(saving.amount) || 0) * ((Number(saving.interest_rate) || 0) / 100)),
+      0
+    );
+
+    return [
+      { icon: Wallet, label: 'Total balance', value: `${totalBalance.toLocaleString()} ETB` },
+      { icon: PiggyBank, label: 'Active savings accounts', value: String(visibleSavings.filter((s) => s.status === 'Active').length) },
+      { icon: Landmark, label: 'Projected interest', value: `${projectedInterest.toLocaleString()} ETB` },
+      { icon: FileText, label: 'Recent transactions', value: String(transactions.length) }
+    ];
+  }, [savings, transactions]);
+
+  return (
+    <div className="admin-page">
+      <PageHeader titleKey="client_my_savings_title" subtitleKey="client_my_savings_page_subtitle" />
+
+      {(pendingLoading || pendingRequests.length > 0) && (
+        <section className="info-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem' }}>Pending requests</h3>
+          {pendingLoading ? (
+            <p style={{ color: '#6b7280', margin: 0 }}>{t('loading')}</p>
+          ) : (
+            <ul className="pending-requests-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {pendingRequests.map((req) => (
+                <li key={req.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', padding: '0.75rem 0', borderBottom: '1px solid #e5e7eb' }}>
+                  <div>
+                    <strong>{getApprovalTypeLabel(req.type)}</strong>
+                    <span style={{ marginLeft: '0.5rem', color: '#6b7280' }}>#{req.id}</span>
+                    <p style={{ margin: '0.25rem 0 0', fontSize: '0.875rem' }}>
+                      {Number(req.amount || 0).toLocaleString()} ETB · Account {req.entity_id}
+                    </p>
+                  </div>
+                  <button type="button" className="btn-sm secondary" onClick={() => openCancelModal(req)}>
+                    {t('cancel')} request
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      <section className="client-hero-card">
+        <div>
+          <span className="client-hero-eyebrow">Savings center</span>
+          <h2>Track your savings growth in one place.</h2>
+          <p>Open a new saving scheme, download statements, and review transactions without digging through multiple sections.</p>
+        </div>
+        <div className="client-hero-actions">
+          <button className="btn-primary" onClick={() => {
+            resetSavingForm();
+            setShowCreateSavingsModal(true);
+          }}>
+            <Plus size={18} />
+            Open Saving Scheme
+          </button>
+        </div>
+      </section>
+
+      <div className="client-overview-grid">
+        {savingsOverview.map((item) => (
+          <div key={item.label} className="client-overview-card">
+            <div className="client-overview-icon">
+              <item.icon size={18} />
+            </div>
+            <div className="client-overview-content">
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="page-actions" style={{ marginBottom: '1.5rem' }}>
+        <button className="btn-primary" onClick={() => {
+          resetSavingForm();
+          setShowCreateSavingsModal(true);
+        }}>
+          <Plus size={18} />
+          Open Saving Scheme
+        </button>
+      </div>
+
+      <div className="savings-summary">
+        <div className="summary-card">
+          <div className="summary-icon">
+            <PiggyBank size={32} />
+          </div>
+          <div className="summary-content">
+            <h3>Total Balance</h3>
+            <p className="summary-value">{savings.reduce((sum, saving) => sum + (saving.amount || 0), 0).toLocaleString()} ETB</p>
+            <p className="summary-change">{savings.length} Active Account{savings.length !== 1 ? 's' : ''}</p>
+          </div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-icon">
+            <TrendingUp size={32} />
+          </div>
+          <div className="summary-content">
+            <h3>Total Interest Projection</h3>
+            <p className="summary-value">
+              {savings.reduce((sum, saving) => sum + ((saving.amount || 0) * ((saving.interest_rate || 0) / 100)), 0).toLocaleString()} ETB
+            </p>
+            <p className="summary-change">Based on saving type rates</p>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="loading-state">Loading savings accounts...</div>
+      ) : visibleSavings.length === 0 ? (
+        <div className="info-card">
+          <div className="info-header">
+            <PiggyBank size={24} />
+            <h3>No Active Savings Accounts</h3>
+          </div>
+          <p>You currently have no active savings accounts.</p>
+        </div>
+      ) : (
+        <div className="savings-grid">
+          {visibleSavings.map((saving) => (
+            <div key={saving.id} className="savings-card">
+              <div className="savings-header">
+                <div className="savings-icon">
+                  <PiggyBank size={32} />
+                </div>
+                <div className="savings-info">
+                  <h3>{saving.type || 'Savings Account'}</h3>
+                  <p>{saving.id}</p>
+                  <span className={`status ${saving.status === 'Active' ? 'active' : 'pending'}`}>
+                    {saving.status}
+                  </span>
+                </div>
+              </div>
+
+              <div className="savings-details">
+                <div className="detail-row">
+                  <span className="label">Current Balance</span>
+                  <span className="value">{saving.amount?.toLocaleString() || '0'} ETB</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">Interest Rate</span>
+                  <span className="value">{saving.interest_rate || '0'}%</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">Start Date</span>
+                  <span className="value">{formatDateTime(saving.created_at, 'N/A')}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="label">Maturity Date</span>
+                  <span className="value">{formatDateOnly(saving.maturity_date, 'Ongoing')}</span>
+                </div>
+              </div>
+
+              <div className="savings-actions">
+                <button className="btn-secondary" onClick={() => openWithdrawModal(saving)} disabled={saving.status !== 'Active'}>
+                  <TrendingUp size={18} />
+                  {saving.status === 'Active' ? 'Withdraw' : `Status: ${saving.status}`}
+                </button>
+                <button className="btn-secondary" onClick={() => openDepositModal(saving)} disabled={saving.status !== 'Active'}>
+                  <Upload size={18} />
+                  Deposit (Receipt)
+                </button>
+                <button className="btn-secondary" onClick={() => handleDownloadStatement(saving)}>
+                  <Download size={18} />
+                  Statement
+                </button>
+              </div>
+              {saving.status !== 'Active' && saving.status !== 'Cancelled' && saving.status !== 'Rejected' && (
+                <div style={{ marginTop: '0.75rem', borderTop: '1px solid #e5e7eb', paddingTop: '0.75rem' }}>
+                  <p style={{ marginBottom: '0.5rem', color: '#6b7280' }}>
+                    Request status: <strong>{saving.status}</strong>
+                  </p>
+                  <input
+                    type="file"
+                    onChange={(e) => setSavingsDocFile(e.target.files?.[0] || null)}
+                    style={{ marginBottom: '0.5rem' }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    onClick={() => handleUploadSavingsSupportDocument(saving)}
+                    disabled={uploadingSavingsDoc}
+                  >
+                    {uploadingSavingsDoc ? 'Uploading...' : 'Upload Supporting Document'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {closedSavings.length > 0 && (
+        <div className="table-container" style={{ marginTop: '1.5rem' }}>
+          <div className="table-header">
+            <h2>{t('closed_savings_plans')}</h2>
+          </div>
+          <div className="savings-grid">
+            {closedSavings.map((saving) => (
+              <div key={saving.id} className="savings-card" style={{ opacity: 0.92 }}>
+                <div className="savings-header">
+                  <div className="savings-info">
+                    <h3>{saving.type || 'Savings Account'}</h3>
+                    <p>{saving.id}</p>
+                    <span className="status inactive">{tStatus(saving.status) || saving.status}</span>
+                  </div>
+                </div>
+                <div className="savings-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ color: '#b91c1c', borderColor: '#fecaca' }}
+                    disabled={dismissSubmitting === saving.id}
+                    onClick={() => handleDismissSavings(saving.id)}
+                  >
+                    <X size={18} />
+                    {dismissSubmitting === saving.id ? t('loading') : t('remove_closed_plan')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="table-container">
+        <div className="table-header">
+          <h2>Recent Transactions</h2>
+        </div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Transaction ID</th>
+              <th>Type</th>
+              <th>{t('amount')}</th>
+              <th>{t('status')}</th>
+              <th>{t('date')}</th>
+              <th>{t('table_balance_after')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {transactions.length === 0 ? (
+              <tr>
+                <td colSpan="6" style={{ textAlign: 'center', padding: '2rem' }}>
+                  No transactions found
+                </td>
+              </tr>
+            ) : (
+              transactions.map((txn) => (
+                <tr key={txn.id}>
+                  <td>{txn.id}</td>
+                  <td>
+                    <span className={`txn-type ${txn.transaction_type === 'deposit' ? 'deposit' : txn.transaction_type === 'interest' ? 'interest' : 'withdrawal'}`}>
+                      {txn.transaction_type}
+                    </span>
+                  </td>
+                  <td>{Number(txn.amount || 0).toLocaleString()} ETB</td>
+                  <td>
+                    <span className={`status ${txn.status === 'Completed' ? 'active' : txn.status === 'Cancelled' ? 'inactive' : 'pending'}`}>
+                      {tStatus(txn.status) || txn.status || 'Completed'}
+                    </span>
+                  </td>
+                  <td>{formatDateTime(txn.created_at)}</td>
+                  <td>{Number(txn.balance_after || 0).toLocaleString()} ETB</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {showWithdrawModal && selectedAccount && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2>Make Withdrawal</h2>
+              <button className="modal-close" onClick={() => setShowWithdrawModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            {transactionSuccess ? (
+              <div className="payment-success">
+                <div className="success-icon">OK</div>
+                <h3>Withdrawal Successful!</h3>
+                <p>Your withdrawal has been processed successfully.</p>
+                <div className="modal-actions">
+                  <button type="button" className="btn-primary" onClick={() => {
+                    setShowWithdrawModal(false);
+                    setTransactionSuccess(false);
+                  }}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : withdrawStep === 'confirm' ? (
+              <div>
+                {renderFeedback()}
+                <div className="info-card" style={{ marginBottom: '1rem', background: '#fffbeb', borderColor: '#fcd34d' }}>
+                  <p style={{ margin: 0 }}><strong>Confirm withdrawal</strong></p>
+                  <p style={{ margin: '0.5rem 0 0' }}>Amount: <strong>{Number(amount).toLocaleString()} ETB</strong></p>
+                  <p style={{ margin: '0.25rem 0 0' }}>Account: {selectedAccount.id}</p>
+                  <p style={{ margin: '0.25rem 0 0', fontSize: '0.875rem', color: '#92400e' }}>
+                    Large withdrawals require branch manager approval before funds are released.
+                  </p>
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setWithdrawStep('form')} disabled={actionSubmitting}>
+                    Back
+                  </button>
+                  <button type="button" className="btn-primary" onClick={handleWithdrawSubmit} disabled={actionSubmitting}>
+                    {actionSubmitting ? 'Submitting…' : 'Submit withdrawal request'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={proceedWithdrawConfirm}>
+                {renderFeedback()}
+                <div className="payment-details">
+                  <div className="payment-detail-row">
+                    <span className="label">{t('account_id_label')}:</span>
+                    <span className="value">{selectedAccount.id}</span>
+                  </div>
+                  <div className="payment-detail-row">
+                    <span className="label">Available Balance:</span>
+                    <span className="value">{selectedAccount.amount?.toLocaleString() || '0'} ETB</span>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Withdrawal Amount (ETB)</label>
+                  <input
+                    type="number"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    min="1"
+                    max={selectedAccount.amount}
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Description (Optional)</label>
+                  <input
+                    type="text"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="e.g., Emergency withdrawal"
+                  />
+                </div>
+
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowWithdrawModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary">
+                    Continue to confirmation
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showCreateSavingsModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2>Open Saving Scheme</h2>
+              <button className="modal-close" onClick={() => setShowCreateSavingsModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            {transactionSuccess ? (
+              <div className="payment-success">
+                <div className="success-icon">OK</div>
+                <h3>Saving Recorded Successfully!</h3>
+                <p>Your saving transaction has been stored and confirmed.</p>
+                {renderReceipt()}
+                <div className="modal-actions">
+                  <button type="button" className="btn-primary" onClick={() => {
+                    setShowCreateSavingsModal(false);
+                    resetSavingForm();
+                  }}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleCreateSavingsSubmit}>
+                {renderFeedback()}
+
+                <ReceiptVerificationPanel
+                  file={receiptProofFile}
+                  onFileChange={setReceiptProofFile}
+                  disabled={uploadingReceiptProof}
+                  inputId="client-savings-opening-receipt"
+                />
+
+                <div className="form-group">
+                  <label>Saving Type</label>
+                  <select
+                    value={newSaving.type}
+                    onChange={(e) => setNewSaving({ ...newSaving, type: e.target.value })}
+                  >
+                    {availableSavingOptions.length === 0 ? (
+                      <option value="">{t('no_data')}</option>
+                    ) : availableSavingOptions.map((option) => (
+                      <option key={option.type} value={option.type}>
+                        {option.type}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedSavingOption && (
+                  <div className="info-card" style={{ marginBottom: '1rem' }}>
+                    <p><strong>Interest Rate:</strong> {selectedSavingOption.interest_rate}%</p>
+                    <p><strong>Minimum Amount:</strong> {selectedSavingOption.minimum_amount.toLocaleString()} ETB</p>
+                    <p><strong>Details:</strong> {selectedSavingOption.description}</p>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Amount (ETB)</label>
+                  <input
+                    type="number"
+                    value={newSaving.amount}
+                    onChange={(e) => setNewSaving({ ...newSaving, amount: e.target.value })}
+                    min={selectedSavingOption?.minimum_amount || 1}
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                {selectedSavingOption?.requires_duration && (
+                  <div className="form-group">
+                    <label>Duration (Months)</label>
+                    <input
+                      type="number"
+                      value={newSaving.duration_months}
+                      onChange={(e) => setNewSaving({ ...newSaving, duration_months: e.target.value })}
+                      min="1"
+                      required
+                    />
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Description (Optional)</label>
+                  <input
+                    type="text"
+                    value={newSaving.description}
+                    onChange={(e) => setNewSaving({ ...newSaving, description: e.target.value })}
+                    placeholder="e.g., Monthly family savings"
+                  />
+                </div>
+
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => {
+                    setShowCreateSavingsModal(false);
+                    resetSavingForm();
+                  }}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary">
+                    <Plus size={18} />
+                    {uploadingReceiptProof ? 'Uploading receipt...' : 'Confirm Saving'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showDepositModal && selectedAccount && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2>Submit Deposit (Receipt Proof)</h2>
+              <button className="modal-close" onClick={() => setShowDepositModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            {depositStep === 'confirm' ? (
+              <div>
+                {renderFeedback()}
+                <div className="info-card" style={{ marginBottom: '1rem', background: '#eff6ff', borderColor: '#bfdbfe' }}>
+                  <p style={{ margin: 0 }}><strong>Confirm deposit request</strong></p>
+                  <p style={{ margin: '0.5rem 0 0' }}>Amount: <strong>{Number(depositAmount).toLocaleString()} ETB</strong></p>
+                  <p style={{ margin: '0.25rem 0 0' }}>Receipt: {depositReceiptFile?.name || '—'}</p>
+                  <p style={{ margin: '0.25rem 0 0', fontSize: '0.875rem', color: '#1e40af' }}>
+                    Your deposit will be reviewed before it is posted to your account.
+                  </p>
+                </div>
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setDepositStep('form')} disabled={depositSubmitting}>
+                    Back
+                  </button>
+                  <button type="button" className="btn-primary" onClick={handleSubmitDepositRequest} disabled={depositSubmitting}>
+                    {depositSubmitting ? 'Submitting…' : 'Submit for approval'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={proceedDepositConfirm}>
+                {renderFeedback()}
+                <div className="payment-details">
+                  <div className="payment-detail-row">
+                    <span className="label">{t('account_id_label')}:</span>
+                    <span className="value">{selectedAccount.id}</span>
+                  </div>
+                  <div className="payment-detail-row">
+                    <span className="label">Current Balance:</span>
+                    <span className="value">{selectedAccount.amount?.toLocaleString() || '0'} ETB</span>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Deposit Amount (ETB) <span className="required">*</span></label>
+                  <input
+                    type="number"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    min="1"
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Description (Optional)</label>
+                  <input
+                    type="text"
+                    value={depositDescription}
+                    onChange={(e) => setDepositDescription(e.target.value)}
+                    placeholder="e.g., Cash deposit at branch"
+                  />
+                </div>
+
+                <ReceiptVerificationPanel
+                  file={depositReceiptFile}
+                  onFileChange={setDepositReceiptFile}
+                  disabled={depositSubmitting}
+                  inputId="client-deposit-receipt"
+                />
+
+                <div className="modal-actions">
+                  <button type="button" className="btn-secondary" onClick={() => setShowDepositModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary">
+                    Continue to confirmation
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      <CancelRequestModal
+        open={cancelModalOpen}
+        subtitle={t('cancel_request_subtitle_savings')}
+        reason={cancelReason}
+        onReasonChange={setCancelReason}
+        onClose={closeCancelModal}
+        onConfirm={confirmCancelPending}
+        submitting={cancelSubmitting}
+      />
+    </div>
+  );
+};
+
+export default MySavings;

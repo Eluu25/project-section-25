@@ -1,0 +1,97 @@
+@import "../../styles/global.css";
+
+.txn-statement-page .statement-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  padding: 1rem 1.1rem;
+  background: linear-gradient(135deg, #f8fafc 0%, #ecfeff 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+}
+
+.txn-statement-page .filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.txn-statement-page .filter-chip {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.txn-statement-page .filter-chip.active,
+.txn-statement-page .filter-chip:hover {
+  border-color: #0f766e;
+  color: #0f766e;
+  background: #f0fdfa;
+}
+
+.txn-statement-page .statement-select {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.875rem;
+  background: #fff;
+  color: #0f172a;
+}
+
+.txn-statement-page .statement-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #0f766e;
+  background: #0f766e;
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.txn-statement-page .statement-action-btn.secondary {
+  background: #fff;
+  color: #0f766e;
+}
+
+.txn-statement-page .statement-action-btn:hover {
+  background: #0d9488;
+  color: #fff;
+}
+
+.txn-statement-page .statement-action-btn.secondary:hover {
+  background: #f0fdfa;
+}
+
+.txn-statement-page .data-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.txn-statement-page .spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+  .txn-statement-page .statement-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

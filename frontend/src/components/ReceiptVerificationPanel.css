@@ -1,0 +1,150 @@
+.receipt-verification-panel {
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  background: var(--surface-muted, #f8fafc);
+  margin-bottom: 1rem;
+}
+
+.receipt-panel-header {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+}
+
+.receipt-panel-header h4 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text-primary, #0f172a);
+}
+
+.receipt-panel-header p {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  color: var(--text-muted, #64748b);
+}
+
+.receipt-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.receipt-status-badge.pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.receipt-status-badge.verified {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.receipt-status-badge.rejected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.receipt-status-badge.consumed {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.receipt-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.receipt-meta-label {
+  color: var(--text-muted, #64748b);
+}
+
+.receipt-meta-row code {
+  background: #fff;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.receipt-hash {
+  font-family: ui-monospace, monospace;
+}
+
+.receipt-file-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+  color: var(--text-primary, #1e293b);
+}
+
+.receipt-upload-zone {
+  margin-top: 0.75rem;
+}
+
+.receipt-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.receipt-upload-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1.25rem;
+  border: 2px dashed #94a3b8;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: center;
+  background: #fff;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.receipt-upload-label:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.receipt-upload-label small {
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.receipt-accept {
+  font-size: 0.75rem !important;
+}
+
+.receipt-selected {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  color: #475569;
+  text-align: center;
+}
+
+.receipt-verify-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.receipt-verify-checkbox input {
+  margin-top: 0.2rem;
+}

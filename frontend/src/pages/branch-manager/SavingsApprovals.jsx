@@ -1,0 +1,725 @@
+import { useEffect, useMemo, useState } from 'react';
+import PageHeader from '../../components/PageHeader.jsx';
+import { CheckCircle, XCircle, Eye, Search, Filter, AlertTriangle, ShieldCheck } from 'lucide-react';
+import '../admin/AdminPages.css';
+import api from '../../utils/api';
+import { useToast } from '../../context/ToastContext';
+import { useLanguage } from '../../context/LanguageContext';
+import { formatDateTime } from '../../utils/dateTime';
+import ReceiptVerificationPanel from '../../components/ReceiptVerificationPanel.jsx';
+
+const APPROVAL_TYPES = new Set(['account_creation', 'transaction_deposit', 'transaction_withdraw', 'savings_account_approval']);
+
+const parseDetails = (details) => {
+  if (!details) {
+    return {};
+  }
+
+  if (typeof details === 'object') {
+    return details;
+  }
+
+  try {
+    return JSON.parse(details);
+  } catch (parseError) {
+    console.warn('Failed to parse approval details:', parseError);
+    return {};
+  }
+};
+
+const normalizeApproval = (request) => {
+  const details = parseDetails(request.details);
+  const amount = Number(request.amount || details.amount || details.initial_balance || 0);
+  const approvalTypeLabel = {
+    account_creation: 'Account Creation',
+    transaction_deposit: 'Large Deposit',
+    transaction_withdraw: 'Large Withdrawal',
+    savings_account_approval: 'Savings Account Approval'
+  }[request.type] || request.type;
+
+  const clientName = details.client_name || details.client || details.clientName || 'Unassigned';
+  const kycStatus = details.kyc_status || 'Pending';
+  const requestedType = details.account_type || details.transaction_type || details.type || '-';
+  const savingsType = details.savings_type || details.product_type || '-';
+
+  return {
+    ...request,
+    details,
+    amount,
+    approvalTypeLabel,
+    clientName,
+    kycStatus,
+    requestedType,
+    savingsType,
+    createdAt: request.created_at || request.createdAt,
+    status: request.status || 'Pending',
+    requiresCeo: request.approval_level === 'ceo',
+    verification: request.verification || null
+  };
+};
+
+const getStatusTone = (status) => {
+  if (status === 'Verified' || status === 'Approved') return 'active';
+  if (status === 'Pending') return 'pending';
+  if (status === 'High') return 'high';
+  return 'inactive';
+};
+
+const formatCurrency = (value) => `${Number(value || 0).toLocaleString()} ETB`;
+
+const SavingsApprovals = () => {
+  const { success, error, warning } = useToast();
+  const { t, tStatus } = useLanguage();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState('all');
+  const [showApproveModal, setShowApproveModal] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [selectedApproval, setSelectedApproval] = useState(null);
+  const [approveJustification, setApproveJustification] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [approvals, setApprovals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [historySummary, setHistorySummary] = useState({
+    accountCreation: { approved: 0, rejected: 0, total: 0 },
+    savingsApproval: { approved: 0, rejected: 0, total: 0 }
+  });
+  const [linkedDocuments, setLinkedDocuments] = useState([]);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [approveVerified, setApproveVerified] = useState(false);
+  const [mySubmittedPending, setMySubmittedPending] = useState([]);
+  const [cancelledActivity, setCancelledActivity] = useState([]);
+
+  useEffect(() => {
+    fetchPendingApprovals();
+    fetchHistorySummary();
+    fetchMySubmittedPending();
+    api.getApprovalActivity({ status: 'Cancelled', limit: 30 }).then((rows) => {
+      setCancelledActivity(Array.isArray(rows) ? rows : []);
+    }).catch(() => setCancelledActivity([]));
+  }, []);
+
+  const fetchMySubmittedPending = async () => {
+    try {
+      const data = await api.getMyPendingApprovalRequests();
+      setMySubmittedPending(Array.isArray(data) ? data : []);
+    } catch {
+      setMySubmittedPending([]);
+    }
+  };
+
+  const handleCancelOwnRequest = async (requestId) => {
+    const reason = window.prompt('Cancellation reason (optional):', 'Cancelled before review');
+    if (reason === null) return;
+    try {
+      await api.cancelApprovalRequest(requestId, reason);
+      success('Request cancelled.');
+      await Promise.all([fetchPendingApprovals(), fetchMySubmittedPending()]);
+    } catch (err) {
+      error(err.message || 'Failed to cancel request');
+    }
+  };
+
+  const fetchPendingApprovals = async () => {
+    setLoading(true);
+    try {
+      const data = await api.getPendingApprovals();
+      const normalized = Array.isArray(data)
+        ? data
+            .filter((request) => APPROVAL_TYPES.has(request.type))
+            .map(normalizeApproval)
+        : [];
+      console.debug('Loaded branch manager approval queue', normalized);
+      setApprovals(normalized);
+    } catch (fetchError) {
+      console.error('Error fetching approval queue:', fetchError);
+      error(fetchError.message || 'Failed to load approval queue');
+      setApprovals([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchHistorySummary = async () => {
+    try {
+      const data = await api.getApprovalHistory('account_creation,savings_account_approval');
+      setHistorySummary({
+        accountCreation: data?.summary?.account_creation || { approved: 0, rejected: 0, total: 0 },
+        savingsApproval: data?.summary?.savings_account_approval || { approved: 0, rejected: 0, total: 0 }
+      });
+    } catch (historyErr) {
+      console.error('Error fetching savings approval history summary:', historyErr);
+    }
+  };
+
+  const filteredApprovals = useMemo(() => (
+    approvals.filter((request) => {
+      const matchesSearch = (
+        (request.clientName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (request.id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (request.entity_id || '').toLowerCase().includes(searchTerm.toLowerCase())
+      );
+      const matchesFilter = filterStatus === 'all' || request.type === filterStatus;
+      return matchesSearch && matchesFilter;
+    })
+  ), [approvals, filterStatus, searchTerm]);
+
+  const summary = useMemo(() => ({
+    accountCreations: approvals.filter((request) => request.type === 'account_creation').length,
+    transactionReviews: approvals.filter((request) => request.type !== 'account_creation').length,
+    missingKyc: approvals.filter((request) => request.kycStatus !== 'Verified').length,
+    escalated: approvals.filter((request) => request.requiresCeo).length
+  }), [approvals]);
+
+  const handleViewDetails = (approval) => {
+    setSelectedApproval(approval);
+    const shouldLoadDocuments = ['transaction_deposit', 'transaction_withdraw', 'account_creation'].includes(approval.type);
+    if (!shouldLoadDocuments) {
+      setLinkedDocuments([]);
+      setDocumentsLoading(false);
+      setShowDetailsModal(true);
+      return;
+    }
+    setDocumentsLoading(true);
+    Promise.all([
+      api.getDocumentsByApprovalRequest(approval.id).catch(() => []),
+      approval?.entity_id ? api.getDocumentsBySavings(approval.entity_id).catch(() => []) : Promise.resolve([])
+    ])
+      .then(([byApproval, bySavings]) => {
+        const merged = [...(byApproval || []), ...(bySavings || [])];
+        const deduped = merged.filter((doc, index, arr) => arr.findIndex((item) => item.id === doc.id) === index);
+        setLinkedDocuments(deduped);
+      })
+      .finally(() => setDocumentsLoading(false));
+    setShowDetailsModal(true);
+  };
+
+  const handleReject = (approval) => {
+    setSelectedApproval(approval);
+    setRejectReason('');
+    setShowRejectModal(true);
+  };
+
+  const handleApprove = (approval) => {
+    setSelectedApproval(approval);
+    setApproveJustification('');
+    setApproveVerified(false);
+    setLinkedDocuments([]);
+    setShowApproveModal(true);
+    if (['transaction_deposit', 'transaction_withdraw'].includes(approval.type)) {
+      setDocumentsLoading(true);
+      api.getDocumentsByApprovalRequest(approval.id)
+        .then((docs) => setLinkedDocuments(Array.isArray(docs) ? docs : []))
+        .catch(() => setLinkedDocuments([]))
+        .finally(() => setDocumentsLoading(false));
+    }
+  };
+
+  const requiresTransactionVerification = (approval) => (
+    approval?.type === 'transaction_deposit' || approval?.type === 'transaction_withdraw'
+  );
+
+  const confirmApprove = async () => {
+    if (!approveJustification.trim()) {
+      warning('Approval justification is required for audit compliance.');
+      return;
+    }
+    if (selectedApproval?.ready_for_branch_review === false) {
+      const blockers = selectedApproval?.readiness_blockers?.join('; ') || 'Missing receipt or required documents';
+      warning(`Cannot approve yet: ${blockers}`);
+      return;
+    }
+    if (requiresTransactionVerification(selectedApproval) && !approveVerified) {
+      warning('Confirm you have verified receipt and request details before approving.');
+      return;
+    }
+    if (submitting) return;
+
+    setSubmitting(true);
+    try {
+      const response = await api.approveApprovalRequest(selectedApproval.id, approveJustification.trim());
+      if (response?.warning) {
+        warning(response.warning);
+      }
+      setShowApproveModal(false);
+      setSelectedApproval(null);
+      setApproveJustification('');
+      success('Approval recorded successfully');
+      fetchPendingApprovals();
+    } catch (approveError) {
+      console.error('Error approving request:', approveError);
+      error(approveError.message || 'Failed to approve request');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const confirmReject = async () => {
+    if (!rejectReason.trim()) {
+      warning('Rejection reason is mandatory for audit compliance.');
+      return;
+    }
+
+    try {
+      await api.rejectApprovalRequest(selectedApproval.id, rejectReason.trim());
+      setShowRejectModal(false);
+      setSelectedApproval(null);
+      setRejectReason('');
+      success(`${selectedApproval.approvalTypeLabel} rejected successfully`);
+      fetchPendingApprovals();
+    } catch (rejectError) {
+      console.error('Error rejecting request:', rejectError);
+      error(rejectError.message || 'Failed to reject request');
+    }
+  };
+
+  const downloadBlob = (blob, filename) => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `document_${new Date().toISOString().slice(0, 10)}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadReceipt = async (documentId) => {
+    if (!documentId) return;
+    try {
+      const { blob, contentDisposition } = await api.downloadDocument(documentId);
+      const match = /filename="([^"]+)"/i.exec(contentDisposition || '');
+      downloadBlob(blob, match?.[1] || `receipt_${documentId}.pdf`);
+      success('Receipt downloaded');
+    } catch (err) {
+      console.error('Receipt download error:', err);
+      error(err.message || 'Failed to download receipt');
+    }
+  };
+
+  return (
+    <div className="admin-page">
+      <PageHeader titleKey="bm_savings_approvals_title" subtitleKey="bm_savings_approvals_subtitle">
+        <div style={{ marginTop: '0.75rem' }}>
+          <span className="inline-meta">Pending requests: {filteredApprovals.length}</span>
+        </div>
+      </PageHeader>
+
+      {cancelledActivity.length > 0 && (
+        <div className="info-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem' }}>Recently cancelled by clients</h3>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {cancelledActivity.slice(0, 8).map((item) => (
+              <li key={item.id} style={{ padding: '0.35rem 0', fontSize: '0.875rem' }}>
+                {item.type} · {item.client_name || item.entity_id} · <span className="status inactive">Cancelled</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {mySubmittedPending.length > 0 && (
+        <div className="info-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem' }}>Your pending submissions ({mySubmittedPending.length})</h3>
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {mySubmittedPending.map((req) => (
+              <li key={req.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0', borderBottom: '1px solid #e5e7eb' }}>
+                <span>{req.id} · {req.type} · {Number(req.amount || 0).toLocaleString()} ETB</span>
+                <button type="button" className="btn-sm secondary" onClick={() => handleCancelOwnRequest(req.id)}>
+                  Cancel
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-icon"><ShieldCheck size={24} /></div>
+          <div className="stat-content">
+            <h3>{summary.accountCreations}</h3>
+            <p>Pending Account Openings</p>
+            <span className="stat-change">Live</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><AlertTriangle size={24} /></div>
+          <div className="stat-content">
+            <h3>{summary.transactionReviews}</h3>
+            <p>Large Transaction Reviews</p>
+            <span className="stat-change">Live</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><XCircle size={24} /></div>
+          <div className="stat-content">
+            <h3>{summary.missingKyc}</h3>
+            <p>KYC Follow-up Needed</p>
+            <span className="stat-change">Before activation</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><CheckCircle size={24} /></div>
+          <div className="stat-content">
+            <h3>{summary.escalated}</h3>
+            <p>CEO-Level Reviews</p>
+            <span className="stat-change">Escalated</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><CheckCircle size={24} /></div>
+          <div className="stat-content">
+            <h3>{historySummary.accountCreation.approved + historySummary.savingsApproval.approved}</h3>
+            <p>Approved (History)</p>
+            <span className="stat-change">Savings and account approvals</span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon"><XCircle size={24} /></div>
+          <div className="stat-content">
+            <h3>{historySummary.accountCreation.rejected + historySummary.savingsApproval.rejected}</h3>
+            <p>Rejected (History)</p>
+            <span className="stat-change">Savings and account rejections</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="page-actions sticky-actions">
+        <div className="search-bar">
+          <Search size={20} />
+          <input
+            type="text"
+            placeholder="Search approvals..."
+            value={searchTerm}
+            onChange={(event) => setSearchTerm(event.target.value)}
+          />
+        </div>
+
+        <div className="filter-dropdown">
+          <Filter size={20} />
+          <select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value)}>
+            <option value="all">All Requests</option>
+            <option value="account_creation">Account Creation</option>
+            <option value="savings_account_approval">Savings Account Approval</option>
+            <option value="transaction_deposit">Large Deposit</option>
+            <option value="transaction_withdraw">Large Withdrawal</option>
+          </select>
+        </div>
+        <button
+          className="btn-secondary"
+          onClick={() => {
+            setSearchTerm('');
+            setFilterStatus('all');
+          }}
+        >
+          Reset Filters
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="table-container">
+          <p style={{ textAlign: 'center', padding: '2rem' }}>Loading approval queue...</p>
+        </div>
+      ) : (
+        <div className="table-container">
+          {filteredApprovals.length === 0 ? (
+            <div className="empty-state">
+              <p>No pending approval requests matched your filters.</p>
+            </div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Request</th>
+                  <th>Client / Account</th>
+                  <th>Type</th>
+                  <th>{t('amount')}</th>
+                  <th>KYC</th>
+                  <th>Readiness</th>
+                  <th>Level</th>
+                  <th>Submitted</th>
+                  <th>{t('actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredApprovals.map((approval) => (
+                  <tr key={approval.id}>
+                  <td>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <strong>{approval.id}</strong>
+                      <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>{approval.approvalTypeLabel}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <strong>{approval.clientName}</strong>
+                      <span style={{ fontSize: '0.85rem', color: '#6b7280' }}>{approval.entity_id}</span>
+                    </div>
+                  </td>
+                  <td>{approval.requestedType}</td>
+                  <td>{formatCurrency(approval.amount)}</td>
+                  <td>
+                    <span className={`status ${getStatusTone(approval.kycStatus)}`}>
+                      {approval.kycStatus}
+                    </span>
+                  </td>
+                  <td>
+                    {approval.ready_for_branch_review === false ? (
+                      <span className="status high" title={(approval.readiness_blockers || []).join(', ')}>
+                        Needs review
+                      </span>
+                    ) : (
+                      <span className={`status ${approval.requiresCeo ? 'high' : 'active'}`}>
+                        Ready
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <span className={`status ${approval.requiresCeo ? 'high' : 'pending'}`}>
+                      {approval.approval_level?.replace('_', ' ') || 'branch manager'}
+                    </span>
+                  </td>
+                  <td>{formatDateTime(approval.createdAt)}</td>
+                  <td>
+                    <button className="btn-icon edit" title="View Details" onClick={() => handleViewDetails(approval)}>
+                      <Eye size={18} />
+                    </button>
+                    <button className="btn-icon edit" title="Approve" onClick={() => handleApprove(approval)}>
+                      <CheckCircle size={18} />
+                    </button>
+                    <button className="btn-icon delete" title="Reject" onClick={() => handleReject(approval)}>
+                      <XCircle size={18} />
+                    </button>
+                  </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {showApproveModal && selectedApproval && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>{t('modal_approve_request')}</h2>
+              <button onClick={() => (submitting ? null : setShowApproveModal(false))} className="modal-close">x</button>
+            </div>
+            <div className="modal-body">
+              <p><strong>Request:</strong> {selectedApproval.id}</p>
+              <p><strong>Client:</strong> {selectedApproval.clientName}</p>
+              <p><strong>Amount:</strong> {formatCurrency(selectedApproval.amount)}</p>
+              {requiresTransactionVerification(selectedApproval) && (
+                <>
+                  {documentsLoading ? (
+                    <p style={{ color: '#6b7280' }}>{t('loading_documents')}</p>
+                  ) : linkedDocuments.length > 0 ? (
+                    linkedDocuments.map((doc) => (
+                      <ReceiptVerificationPanel
+                        key={doc.id}
+                        document={doc}
+                        verification={selectedApproval.verification}
+                        showVerifyCheckbox
+                        verified={approveVerified}
+                        onVerifiedChange={setApproveVerified}
+                        disabled={submitting}
+                      />
+                    ))
+                  ) : selectedApproval.type === 'transaction_deposit' ? (
+                    <p style={{ color: '#b45309', marginBottom: '1rem' }}>{t('bm_no_receipt_linked')}</p>
+                  ) : (
+                    <div className="info-card" style={{ marginBottom: '1rem', background: '#fffbeb', borderColor: '#fcd34d' }}>
+                      <AlertTriangle size={20} style={{ color: '#b45309' }} />
+                      <span style={{ color: '#92400e' }}>{t('bm_verify_before_approve')}</span>
+                    </div>
+                  )}
+                  {linkedDocuments.length > 0 && (
+                    <ul style={{ margin: '0 0 1rem', paddingLeft: '1.25rem' }}>
+                      {linkedDocuments.map((doc) => (
+                        <li key={`dl-${doc.id}`}>
+                          <button type="button" className="btn-sm secondary" onClick={() => handleDownloadReceipt(doc.id)}>
+                            {doc.type || doc.file_name || t('view_receipt')}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+              <div className="form-group">
+                <label>Approval Justification <span className="required">*</span></label>
+                <textarea
+                  value={approveJustification}
+                  onChange={(event) => setApproveJustification(event.target.value)}
+                  placeholder="Enter approval justification for audit trail"
+                  rows={4}
+                  disabled={submitting}
+                />
+              </div>
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setShowApproveModal(false)} disabled={submitting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={confirmApprove}
+                  disabled={submitting || (requiresTransactionVerification(selectedApproval) && !approveVerified)}
+                >
+                  {submitting ? 'Approving...' : 'Confirm Approve'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRejectModal && selectedApproval && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>{t('modal_reject_request')}</h2>
+              <button onClick={() => (submitting ? null : setShowRejectModal(false))} className="modal-close">x</button>
+            </div>
+            <div className="modal-body">
+              <p><strong>Request:</strong> {selectedApproval.id}</p>
+              <p><strong>Client:</strong> {selectedApproval.clientName}</p>
+              <p><strong>Amount:</strong> {formatCurrency(selectedApproval.amount)}</p>
+              <div className="form-group">
+                <label>Rejection Reason <span className="required">*</span></label>
+                <textarea
+                  value={rejectReason}
+                  onChange={(event) => setRejectReason(event.target.value)}
+                  placeholder="Provide the control or compliance reason for rejection"
+                  rows={4}
+                />
+              </div>
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setShowRejectModal(false)} disabled={submitting}>
+                  Cancel
+                </button>
+                <button className="btn-primary delete" onClick={confirmReject} disabled={submitting}>
+                  Confirm Rejection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDetailsModal && selectedApproval && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Approval Details</h2>
+              <button onClick={() => setShowDetailsModal(false)} className="modal-close">x</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Request ID</label>
+                <p>{selectedApproval.id}</p>
+              </div>
+              <div className="form-group">
+                <label>Approval Type</label>
+                <p>{selectedApproval.approvalTypeLabel}</p>
+              </div>
+              <div className="form-group">
+                <label>Client</label>
+                <p>{selectedApproval.clientName}</p>
+              </div>
+              <div className="form-group">
+                <label>Entity / Account</label>
+                <p>{selectedApproval.entity_id}</p>
+              </div>
+              <div className="form-group">
+                <label>Savings Type</label>
+                <p>{selectedApproval.savingsType || '-'}</p>
+              </div>
+              <div className="form-group">
+                <label>KYC Status</label>
+                <span className={`status ${getStatusTone(selectedApproval.kycStatus)}`}>
+                  {selectedApproval.kycStatus}
+                </span>
+              </div>
+              <div className="form-group">
+                <label>Requested Amount</label>
+                <p>{formatCurrency(selectedApproval.amount)}</p>
+              </div>
+              <div className="form-group">
+                <label>Workflow Level</label>
+                <p>{selectedApproval.approval_level?.replace('_', ' ') || 'branch manager'}</p>
+              </div>
+              <div className="form-group">
+                <label>Maker Details</label>
+                <p>{selectedApproval.requested_by_name || `User ${selectedApproval.requested_by || '-'}`}</p>
+              </div>
+              <div className="form-group">
+                <label>Payload Snapshot</label>
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '0.85rem' }}>
+                  {JSON.stringify(selectedApproval.details, null, 2)}
+                </pre>
+              </div>
+              {selectedApproval.type === 'transaction_deposit' && selectedApproval.details?.requires_receipt_proof && (
+                <div className="form-group">
+                  <label>Receipt Proof</label>
+                  {selectedApproval.details?.receipt_document_id ? (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => handleDownloadReceipt(selectedApproval.details.receipt_document_id)}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
+                    >
+                      <Eye size={18} />
+                      Download Receipt ({selectedApproval.details.receipt_document_id})
+                    </button>
+                  ) : (
+                    <div className="info-card" style={{ margin: 0, borderColor: '#fca5a5', background: '#fef2f2' }}>
+                      Missing receipt proof. Maker must attach the receipt before approval.
+                    </div>
+                  )}
+                </div>
+              )}
+              {selectedApproval.type !== 'transaction_withdraw' && (
+                <div className="form-group">
+                  <label>{t('bm_attached_documents')}</label>
+                  {documentsLoading ? (
+                    <p>{t('loading')}</p>
+                  ) : linkedDocuments.length === 0 ? (
+                    <p style={{ color: '#6b7280' }}>{t('bm_no_documents')}</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {linkedDocuments.map((doc) => (
+                        <button
+                          key={doc.id}
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => handleDownloadReceipt(doc.id)}
+                          style={{ justifyContent: 'space-between', display: 'flex' }}
+                        >
+                          <span>
+                            {doc.type || 'Document'} — {doc.receipt_reference || doc.id}
+                            {doc.file_name ? ` (${doc.file_name})` : ''}
+                          </span>
+                          <span>{t('ss_view_file')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setShowDetailsModal(false)}>
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default SavingsApprovals;
