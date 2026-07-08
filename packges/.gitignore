@@ -1,7 +1,7 @@
-# Dependencies
+ Dependencies
 node_modules/
 
-# Environment & secrets
+Environment & secrets
 .env
 .env.local
 .env.*.local
@@ -9,24 +9,24 @@ backend/.env
 frontend/.env
 frontend/.env.development
 
-# Build output
+Build output
 frontend/dist/
 
-# Local database & uploads
+Local database & uploads
 backend/database.sqlite
 backend/database.sqlite-journal
 backend/uploads/*
 !backend/uploads/.gitkeep
 
-# Logs & OS
+Logs & OS
 *.log
 .DS_Store
 Thumbs.db
 
-# IDE
+IDE
 .idea/
 .vscode/
 *.swp
 
-# Test coverage
+Test coverage
 coverage/
